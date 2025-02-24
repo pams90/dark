@@ -2,7 +2,9 @@ protobuf==3.20.3
 streamlit>=1.28
 transformers>=4.30
 torch>=2.0
-chromadb>=0.4
+chromadb-client>=0.4.15  # New client requirement
+chromadb>=0.4.15
+pypika>=0.48.9  # Required for ChromaDB queries
 accelerate>=0.21
 sentencepiece>=0.1.99
 --extra-index-url https://download.pytorch.org/whl/cpu
