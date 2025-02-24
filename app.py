@@ -2,9 +2,8 @@
 import streamlit as st
 from transformers import AutoTokenizer, pipeline
 import torch
-from chromadb_client import Client, Settings  # Updated import
+from chromadb import HttpClient, Settings
 import time
-import sys
 
 # ======================
 # App Configuration
@@ -34,18 +33,18 @@ if "age_verified" not in st.session_state:
     st.stop()
 
 # ======================
-# ChromaDB Memory Setup (Updated)
+# ChromaDB Setup (Corrected)
 # ======================
 @st.cache_resource
-def setup_memory():
-    return Client(Settings(
+def setup_chroma():
+    return HttpClient(settings=Settings(
         chroma_db_impl="duckdb+parquet",
         persist_directory="./chroma_data",
         anonymized_telemetry=False
     ))
 
-chroma_client = setup_memory()
-collection = chroma_client.get_or_create_collection(name="dark_romance")
+chroma_client = setup_chroma()
+collection = chroma_client.get_or_create_collection("dark_romance")
 
 # ======================
 # AI Model Loader
@@ -68,35 +67,38 @@ def load_model():
         pad_token_id=tokenizer.eos_token_id
     )
 
-generator = load_model()
+try:
+    generator = load_model()
+except Exception as e:
+    st.error(f"Failed to load model: {str(e)}")
+    st.stop()
 
 # ======================
 # Generation Logic
 # ======================
-def build_prompt(user_inputs: dict, previous_chapters: list) -> str:
+def build_prompt(inputs: dict, history: list) -> str:
     return f"""
-    [INST] Write a dark romance chapter with these specifications:
-    Genre: {user_inputs['genre']}
-    Characters: {', '.join(user_inputs['characters'])}
-    Story Beat: {user_inputs['current_instruction']}
-    Style: {user_inputs['style']}
-    Taboos: {', '.join(user_inputs['taboos']) or 'None'}
+    Write a dark romance chapter with these elements:
+    Genre: {inputs['genre']}
+    Characters: {', '.join(inputs['characters'])}
+    Instruction: {inputs['instruction']}
+    Style: {inputs['style']}
+    Taboos: {', '.join(inputs['taboos']) or 'None'}
     
-    Previous Context: {previous_chapters[-2:] if previous_chapters else "None"}
+    Previous Context: {history[-2:] if history else "None"}
     
     Include:
     - Moral ambiguity
     - Forbidden desire
-    - Atmospheric tension
+    - Atmospheric descriptions
     - At least one plot twist
-    [/INST]
     """
 
 # ======================
 # Streamlit UI
 # ======================
 st.title("🖤 Dark Romance Book Factory")
-st.caption("Generate 100% Original Dark Romance Novels - Chapter by Chapter")
+st.caption("Generate Original Dark Romance Novels - Chapter by Chapter")
 
 # ======================
 # Controls Sidebar
@@ -111,9 +113,9 @@ with st.sidebar:
         "BDSM Power Dynamics"
     ], index=1)
     
-    num_protagonists = st.slider("Main Characters", 1, 3, 2)
+    num_chars = st.slider("Main Characters", 1, 3, 2)
     protagonists = []
-    for i in range(num_protagonists):
+    for i in range(num_chars):
         protagonists.append(st.text_input(
             f"Character {i+1}", 
             value=f"Morally gray {['mafia boss', 'vampire lord', 'tortured billionaire'][i%3]}",
@@ -133,7 +135,7 @@ with st.sidebar:
         "Explicit Intimacy"
     ], default=["Supernatural Violence"])
     
-    current_instruction = st.text_area(
+    instruction = st.text_area(
         "📝 Chapter Instructions", 
         placeholder="e.g., 'Introduce betrayal scene with hidden supernatural powers'",
         height=100
@@ -143,7 +145,7 @@ with st.sidebar:
 # Generation & Output
 # ======================
 if st.button("✨ Generate Next Chapter", use_container_width=True):
-    if not current_instruction:
+    if not instruction:
         st.error("Please provide chapter instructions!")
         st.stop()
     
@@ -152,17 +154,21 @@ if st.button("✨ Generate Next Chapter", use_container_width=True):
         "characters": protagonists,
         "style": style,
         "taboos": taboos,
-        "current_instruction": current_instruction
+        "instruction": instruction
     }
     
-    previous_chapters = collection.get()["documents"] if collection.count() > 0 else []
+    try:
+        previous_chapters = collection.get()["documents"] if collection.count() > 0 else []
+    except Exception as e:
+        st.error(f"Failed to load previous chapters: {str(e)}")
+        st.stop()
     
     with st.spinner("Crafting your dark chapter..."):
         try:
             start_time = time.time()
             prompt = build_prompt(user_inputs, previous_chapters)
             response = generator(prompt, max_new_tokens=1500)[0]['generated_text']
-            new_chapter = response.split("[/INST]")[-1].strip()
+            new_chapter = response.split("Include:")[-1].strip()
             gen_time = time.time() - start_time
             
             collection.add(
@@ -183,10 +189,14 @@ if st.button("✨ Generate Next Chapter", use_container_width=True):
 # ======================
 if collection.count() > 0:
     with st.expander("📚 Full Manuscript Preview"):
-        for idx, chapter in enumerate(collection.get()["documents"]):
-            st.subheader(f"Chapter {idx + 1}")
-            st.write(chapter)
-            st.divider()
+        try:
+            chapters = collection.get()["documents"]
+            for idx, chapter in enumerate(chapters):
+                st.subheader(f"Chapter {idx + 1}")
+                st.write(chapter)
+                st.divider()
+        except Exception as e:
+            st.error(f"Failed to load chapters: {str(e)}")
 
     st.download_button(
         label="💾 Download Manuscript",
@@ -196,5 +206,8 @@ if collection.count() > 0:
     )
 
     if st.button("🧹 Reset Book", type="secondary", use_container_width=True):
-        collection.delete()
-        st.rerun()
+        try:
+            chroma_client.delete_collection("dark_romance")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Reset failed: {str(e)}")
