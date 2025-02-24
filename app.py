@@ -2,8 +2,9 @@
 import streamlit as st
 from transformers import AutoTokenizer, pipeline
 import torch
-from chromadb import Client, Settings
+from chromadb_client import Client, Settings  # Updated import
 import time
+import sys
 
 # ======================
 # App Configuration
@@ -33,21 +34,21 @@ if "age_verified" not in st.session_state:
     st.stop()
 
 # ======================
-# ChromaDB Memory Setup
+# ChromaDB Memory Setup (Updated)
 # ======================
 @st.cache_resource
 def setup_memory():
-    return Client(settings=Settings(
+    return Client(Settings(
+        chroma_db_impl="duckdb+parquet",
         persist_directory="./chroma_data",
-        allow_reset=True,
         anonymized_telemetry=False
     ))
 
 chroma_client = setup_memory()
-collection = chroma_client.get_or_create_collection("dark_romance")
+collection = chroma_client.get_or_create_collection(name="dark_romance")
 
 # ======================
-# AI Model Loader (Optimized)
+# AI Model Loader
 # ======================
 @st.cache_resource
 def load_model():
@@ -70,34 +71,23 @@ def load_model():
 generator = load_model()
 
 # ======================
-# Generation Utilities
+# Generation Logic
 # ======================
-def style_randomizer(text: str) -> str:
-    """Add human-like variations to generated text"""
-    replacements = {
-        " however": "; however",
-        " therefore": ". Therefore",
-        "The": "The" if torch.rand(1) > 0.5 else "The"
-    }
-    for k, v in replacements.items():
-        text = text.replace(k, v, 1)
-    return text
-
 def build_prompt(user_inputs: dict, previous_chapters: list) -> str:
     return f"""
     [INST] Write a dark romance chapter with these specifications:
     Genre: {user_inputs['genre']}
-    Main Characters: {', '.join(user_inputs['characters'])}
+    Characters: {', '.join(user_inputs['characters'])}
     Story Beat: {user_inputs['current_instruction']}
     Style: {user_inputs['style']}
-    Taboos: {', '.join(user_inputs['taboos']) if user_inputs['taboos'] else 'None'}
+    Taboos: {', '.join(user_inputs['taboos']) or 'None'}
     
     Previous Context: {previous_chapters[-2:] if previous_chapters else "None"}
     
     Include:
-    - Atmospheric descriptions
     - Moral ambiguity
     - Forbidden desire
+    - Atmospheric tension
     - At least one plot twist
     [/INST]
     """
@@ -109,12 +99,11 @@ st.title("🖤 Dark Romance Book Factory")
 st.caption("Generate 100% Original Dark Romance Novels - Chapter by Chapter")
 
 # ======================
-# User Controls (Sidebar)
+# Controls Sidebar
 # ======================
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # Genre Selection
     genre = st.selectbox("Book Type", [
         "Mafia Romance", 
         "Vampire Dark Romance", 
@@ -122,20 +111,18 @@ with st.sidebar:
         "BDSM Power Dynamics"
     ], index=1)
     
-    # Character Configuration
     num_protagonists = st.slider("Main Characters", 1, 3, 2)
     protagonists = []
     for i in range(num_protagonists):
         protagonists.append(st.text_input(
-            f"Character {i+1} Description", 
+            f"Character {i+1}", 
             value=f"Morally gray {['mafia boss', 'vampire lord', 'tortured billionaire'][i%3]}",
             key=f"char_{i}"
         ))
     
-    # Content Levers
     style = st.selectbox("Writing Style", [
-        "Visceral First-Person POV",
-        "Atmospheric Third-Person Limited",
+        "Visceral First-Person",
+        "Atmospheric Third-Person",
         "Cinematic Present Tense"
     ], index=0)
     
@@ -153,7 +140,7 @@ with st.sidebar:
     )
 
 # ======================
-# Main Generation Logic
+# Generation & Output
 # ======================
 if st.button("✨ Generate Next Chapter", use_container_width=True):
     if not current_instruction:
@@ -168,37 +155,34 @@ if st.button("✨ Generate Next Chapter", use_container_width=True):
         "current_instruction": current_instruction
     }
     
-    # Retrieve context
     previous_chapters = collection.get()["documents"] if collection.count() > 0 else []
     
-    # Generate chapter
     with st.spinner("Crafting your dark chapter..."):
         try:
             start_time = time.time()
             prompt = build_prompt(user_inputs, previous_chapters)
             response = generator(prompt, max_new_tokens=1500)[0]['generated_text']
-            new_chapter = style_randomizer(response.split("[/INST]")[-1].strip())
+            new_chapter = response.split("[/INST]")[-1].strip()
             gen_time = time.time() - start_time
+            
+            collection.add(
+                documents=[new_chapter],
+                ids=f"chapter_{collection.count() + 1}"
+            )
+            
+            st.subheader(f"📖 Chapter {collection.count()}")
+            st.write(new_chapter)
+            st.caption(f"⏱️ Generated in {gen_time:.2f} seconds")
+            
         except Exception as e:
             st.error(f"Generation failed: {str(e)}")
             st.stop()
-    
-    # Store in memory
-    collection.add(
-        documents=[new_chapter],
-        ids=f"chapter_{collection.count() + 1}"
-    )
-    
-    # Display results
-    st.subheader(f"📖 Chapter {collection.count()}")
-    st.write(new_chapter)
-    st.caption(f"⏱️ Generated in {gen_time:.2f} seconds")
 
 # ======================
 # Book Management
 # ======================
 if collection.count() > 0:
-    with st.expander("📚 Full Manuscript Preview", expanded=False):
+    with st.expander("📚 Full Manuscript Preview"):
         for idx, chapter in enumerate(collection.get()["documents"]):
             st.subheader(f"Chapter {idx + 1}")
             st.write(chapter)
